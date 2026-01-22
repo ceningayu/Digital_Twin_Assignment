@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>UT Campus Carbon Buildings</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <!-- Mapbox GL JS v3.18.0 --> 
+   <link href="https://api.mapbox.com/mapbox-gl-js/v3.18.0/mapbox-gl.css" rel="stylesheet" /> 
+   <script src="https://api.mapbox.com/mapbox-gl-js/v3.18.0/mapbox-gl.js"></script>
+
+  <!-- Mapbox Draw v1.5.1 -->
+  <link href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.5.1/mapbox-gl-draw.css" rel="stylesheet" />
+  <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.5.1/mapbox-gl-draw.js"></script>
+
+  <style>
+    body { margin: 0; padding: 0; }
+
+    #carbon-output {
+      position: absolute;
+      top: 180px;
+      right: 10px;
+      background: rgba(0,0,0,0.75);
+      color: white;
+      padding: 10px 14px;
+      font-size: 13px;
+      border-radius: 6px;
+      z-index: 10;
+      min-width: 210px;
+    }
+
+    #legend {
+      position: absolute;
+      bottom: 80px;
+      right: 10px;
+      background: white;
+      padding: 10px;
+      font-size: 12px;
+      border-radius: 6px;
+      box-shadow: 0 0 6px rgba(0,0,0,0.3);
+      z-index: 10;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      margin-top: 4px;
+    }
+
+    .legend-color {
+      width: 14px;
+      height: 14px;
+      margin-right: 6px;
+    }
+  </style>
+</head>
+
+<body>
+
+<script id="mapbox-key" type="text/plain">__MAPBOX_KEY__</script>
+
+<div id="map" style="width:100%; height:600px;"></div>
+
+<div id="carbon-output">
+  Draw a polygon to calculate carbon loss
+</div>
+
+<div id="legend">
+  <strong>Carbon loss (Mg C)</strong>
+  <div class="legend-item"><div class="legend-color" style="background:#2ecc71"></div>0–10</div>
+  <div class="legend-item"><div class="legend-color" style="background:#f1c40f"></div>10–25</div>
+  <div class="legend-item"><div class="legend-color" style="background:#e67e22"></div>25–50</div>
+  <div class="legend-item"><div class="legend-color" style="background:#e74c3c"></div>>50</div>
+</div>
+
+<script>
+  mapboxgl.accessToken = document.getElementById("mapbox-key").textContent;
+
+  // These must be valid GeoJSON objects, not strings
+  const chmTrees = __CHM_TREES__;
+  const utBoundary = __UT_BOUNDARY__;
+
+  let buildingCounter = 1;
+  let selectedBuildingId = null;
+
+  const infoPanel = document.getElementById("carbon-output");
+
+  function resetInfoPanel() {
+    selectedBuildingId = null;
+    infoPanel.innerHTML = "Draw a polygon to calculate carbon loss";
+  }
+
+  const map = new mapboxgl.Map({
+    container: "map",
+    style: "mapbox://styles/mapbox/standard",
+    center: [6.852, 52.242],
+    zoom: 13.5,
+    pitch: 0,
+    bearing: 0
+  });
+
+  map.dragRotate.enable();
+  map.touchZoomRotate.enableRotation();
+  map.addControl(new mapboxgl.NavigationControl({ visualizePitch: true }), "top-right");
+
+  const draw = new MapboxDraw({
+    displayControlsDefault: false,
+    controls: { polygon: true, trash: true }
+  });
+  map.addControl(draw);
+
+  map.on("style.load", () => {
+    map.setConfigProperty('basemap', 'lightPreset', 'dawn');
+    // ---------- MAPBOX DEFAULT 3D BUILDINGS ----------
+    const layers = map.getStyle().layers;
+    const labelLayer = layers.find(
+      layer => layer.type === "symbol" && layer.layout && layer.layout["text-field"]
+    );
+    const labelLayerId = labelLayer ? labelLayer.id : undefined;
+
+    if (labelLayerId) {
+      map.addLayer(
+        {
+          id: "mapbox-3d-buildings",
+          source: "composite",
+          "source-layer": "building",
+          filter: ["==", "extrude", "true"],
+          type: "fill-extrusion",
+          minzoom: 15,
+          paint: {
+            "fill-extrusion-color": "#aaaaaa",
+            "fill-extrusion-height": ["get", "height"],
+            "fill-extrusion-base": ["get", "min_height"],
+            "fill-extrusion-opacity": 0.6
+          }
+        },
+        labelLayerId
+      );
+    }
+
+    // UT boundary source and layer
+    if (!map.getSource("ut-boundary")) {
+      map.addSource("ut-boundary", { type: "geojson", data: utBoundary });
+    } else {
+      map.getSource("ut-boundary").setData(utBoundary);
+    }
+    if (!map.getLayer("ut-boundary-line")) {
+      map.addLayer({
+        id: "ut-boundary-line",
+        type: "line",
+        source: "ut-boundary",
+        paint: { "line-color": "#ffff00", "line-width": 4 }
+      });
+    }
+
+    // CHM trees source and layer
+    if (!map.getSource("chm-trees")) {
+      map.addSource("chm-trees", { type: "geojson", data: chmTrees });
+    } else {
+      map.getSource("chm-trees").setData(chmTrees);
+    }
+    if (!map.getLayer("chm-canopy")) {
+      map.addLayer({
+        id: "chm-canopy",
+        type: "circle",
+        source: "chm-trees",
+        paint: {
+          "circle-color": "#2e7d32",
+          "circle-radius": [
+            "interpolate", ["linear"], ["get", "height"],
+            3, 2,
+            10, 6,
+            20, 12,
+            40, 20
+          ],
+          "circle-opacity": [
+            "interpolate", ["linear"], ["get", "height"],
+            3, 0.25,
+            20, 0.55,
+            40, 0.85
+          ],
+          "circle-blur": 2
+        }
+      });
+    }
+
+    // Drawn buildings source and layer
+    if (!map.getSource("drawn-buildings")) {
+      map.addSource("drawn-buildings", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] }
+      });
+    }
+    if (!map.getLayer("drawn-buildings-3d")) {
+      map.addLayer({
+        id: "drawn-buildings-3d",
+        type: "fill-extrusion",
+        source: "drawn-buildings",
+        paint: {
+          "fill-extrusion-height": [
+            "interpolate", ["linear"],
+            ["get", "carbon_loss"],
+            0, 0,
+            60, 60
+          ],
+          "fill-extrusion-color": [
+            "case",
+            ["<", ["get", "carbon_loss"], 10], "#2ecc71",
+            ["<", ["get", "carbon_loss"], 25], "#f1c40f",
+            ["<", ["get", "carbon_loss"], 50], "#e67e22",
+            "#e74c3c"
+          ],
+          "fill-extrusion-opacity": 0.85
+        }
+      });
+    }
+  });
+
+  function updateBuildings() {
+    if (map.getSource("drawn-buildings")) {
+      map.getSource("drawn-buildings").setData(draw.getAll());
+    }
+  }
+
+  /* ---------- DELETE BUILDING ---------- */
+  map.on("draw.delete", () => {
+    resetInfoPanel();
+    updateBuildings();
+  });
+
+  /* ---------- CREATE BUILDING ---------- */
+  map.on("draw.create", (e) => {
+    const feature = e.features[0];
+    fetch("http://localhost:8001/polygon", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(feature)
+    })
+    .then(res => res.json())
+    .then(data => {
+      console.log("Analysis result:", data);
+
+      if (!data.properties) {
+        infoPanel.innerHTML = "No analysis data for this area";
+        return;
+      }
+
+      feature.properties.carbon_loss = data.properties.carbon_loss_MgC;
+      feature.properties.mean_lst = data.properties.mean_lst;
+      feature.properties.max_lst = data.properties.max_lst;
+      feature.properties.delta_lst = data.properties.delta_lst;
+      feature.properties.predicted_mean_lst = data.properties.predicted_mean_lst;
+      feature.properties.predicted_max_lst = data.properties.predicted_max_lst;
+      feature.properties.building_id = buildingCounter++;
+
+      draw.add(feature);
+      updateBuildings();
+
+      map.easeTo({
+        pitch: 60,
+        zoom: map.getZoom() + 0.3,
+        duration: 1200
+      });
+
+      infoPanel.innerHTML = `
+        <strong>Building #${feature.properties.building_id}</strong><br>
+        Carbon loss: ${feature.properties.carbon_loss.toFixed(2)} Mg C<br>
+        Mean LST (current): ${feature.properties.mean_lst.toFixed(2)} °C<br>
+        Max LST (current): ${feature.properties.max_lst.toFixed(2)} °C<br>
+        Predicted Heat increase: +${feature.properties.delta_lst.toFixed(2)} °C<br>
+        Predicted mean LST: ${feature.properties.predicted_mean_lst.toFixed(2)} °C<br>
+        Predicted max LST: ${feature.properties.predicted_max_lst.toFixed(2)} °C
+      `;
+    });
+  });
+
+  /* ---------- CLICK BUILDING ---------- */
+  map.on("click", "drawn-buildings-3d", (e) => {
+    const p = e.features[0].properties;
+
+    infoPanel.innerHTML = `
+      <strong>Building #${p.building_id}</strong><br>
+      Carbon loss: ${Number(p.carbon_loss).toFixed(2)} Mg C<br>
+      Mean LST: ${Number(p.mean_lst).toFixed(2)} °C<br>
+      Max LST: ${Number(p.max_lst).toFixed(2)} °C<br>
+      Predicted Heat Increase : ${Number(p.delta_lst).toFixed(2)} °C<br>
+      Predicted mean LST: ${Number(p.predicted_mean_lst).toFixed(2)} °C<br>
+      Predicted max LST : ${Number(p.predicted_max_lst).toFixed(2)} °C
+    `;
+  });
+
+  /* ---------- CLICK OUTSIDE ---------- */
+  map.on("click", (e) => {
+    const features = map.queryRenderedFeatures(e.point, {
+      layers: ["drawn-buildings-3d"]
+    });
+
+    if (!features.length) {
+      resetInfoPanel();
+    }
+  });
+</script>
+
+</body>
+</html>
